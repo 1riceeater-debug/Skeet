@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Loudness BLE Puller</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: Arial; text-align: center; margin-top: 30px; background: #222; color: white;}
+        button { padding: 15px; font-size: 18px; margin: 10px; border-radius: 8px; width: 80%; font-weight: bold;}
+        #status { margin-top: 15px; font-size: 18px; color: #ffeb3b; }
+        #vol-bar-container { width: 80%; height: 30px; background: #444; margin: 20px auto; border-radius: 15px; overflow: hidden; }
+        #vol-bar { width: 0%; height: 100%; background: #0f0; transition: width 0.1s; }
+        #log { margin-top: 20px; color: #0f0; text-align: left; padding: 10px; font-size: 14px; background: #111; height: 200px; overflow-y: scroll; border: 1px solid #444;}
+    </style>
+</head>
+<body>
+
+    <h2>Volume BLE Puller</h2>
+    <button id="connectBtn" style="background: #007BFF; color: white;">1. Connect Trap (BLE)</button>
+    <button id="listenBtn" style="background: #28A745; color: white;">2. Turn On Mic</button>
+    
+    <div id="status">Status: Waiting...</div>
+    
+    <div>Mic Volume:</div>
+    <div id="vol-bar-container"><div id="vol-bar"></div></div>
+    
+    <!-- Threshold Slider -->
+    <label for="threshSlider">Trigger Sensitivity: <span id="threshVal">50</span></label><br>
+    <input type="range" id="threshSlider" min="10" max="150" value="50" style="width: 80%; margin-top: 10px;">
+
+    <div id="log">--- Debug Log ---<br></div>
+
+<script>
+    const SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+    const CHAR_RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
+    let bleCharacteristic;
+    let isCoolingDown = false;
+    let threshold = 50;
+
+    function logMsg(msg) {
+        const logDiv = document.getElementById('log');
+        logDiv.innerHTML = msg + "<br>" + logDiv.innerHTML;
+    }
+
+    // Update Threshold from slider
+    document.getElementById('threshSlider').oninput = function() {
+        threshold = this.value;
+        document.getElementById('threshVal').innerText = threshold;
+    }
+
+    // --- 1. BLE CONNECTION ---
+    document.getElementById('connectBtn').addEventListener('click', async () => {
+        try {
+            document.getElementById('status').innerText = "Status: Connecting...";
+            logMsg("Searching for BLUE Puller...");
+            const device = await navigator.bluetooth.requestDevice({
+                filters:[{ name: 'BLUE Puller' }],
+                optionalServices: [SERVICE_UUID]
+            });
+            const server = await device.gatt.connect();
+            const service = await server.getPrimaryService(SERVICE_UUID);
+            bleCharacteristic = await service.getCharacteristic(CHAR_RX_UUID);
+            
+            document.getElementById('status').innerText = "Status: CONNECTED! 🟢";
+            document.getElementById('status').style.color = "#0f0";
+            logMsg("BLE Connected successfully.");
+        } catch (error) {
+            document.getElementById('status').innerText = "Status: BLE Error 🔴";
+            logMsg("BLE Error: " + error);
+        }
+    });
+
+    // --- 2. RAW VOLUME METER LOGIC ---
+    document.getElementById('listenBtn').addEventListener('click', async () => {
+        try {
+            logMsg("Requesting Mic access...");
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+            logMsg("Mic granted!");
+            document.getElementById('status').innerText = "Status: LISTENING 🎤";
+
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const analyser = audioContext.createAnalyser();
+            const microphone = audioContext.createMediaStreamSource(stream);
+            
+            analyser.fftSize = 256;
+            microphone.connect(analyser);
+            
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+            function checkVolume() {
+                analyser.getByteFrequencyData(dataArray);
+                let sum = 0;
+                for(let i = 0; i < dataArray.length; i++) {
+                    sum += dataArray[i];
+                }
+                let averageVolume = sum / dataArray.length;
+                
+                // Update visual bar
+                document.getElementById('vol-bar').style.width = Math.min(100, (averageVolume / 1.5)) + "%";
+
+                // Trigger if loud enough
+                if (averageVolume > threshold && !isCoolingDown) {
+                    fireTrap(averageVolume);
+                }
+
+                requestAnimationFrame(checkVolume);
+            }
+            
+            checkVolume();
+
+        } catch (err) {
+            logMsg("Mic Error: " + err);
+            document.getElementById('status').innerText = "Status: MIC DENIED 🔴";
+        }
+    });
+
+    async function fireTrap(vol) {
+        isCoolingDown = true; // Prevent rapid-fire
+        document.getElementById('vol-bar').style.background = "#f00"; // Flash Red
+        logMsg("💥 LOUD NOISE DETECTED (Vol: " + Math.round(vol) + ")");
+        
+        if (bleCharacteristic) {
+            try {
+                let encoder = new TextEncoder('utf-8');
+                await bleCharacteristic.writeValue(encoder.encode("H"));
+                logMsg("🚀 SENT: 'H' (High House)");
+            } catch (err) {
+                logMsg("BLE Send Failed: " + err);
+            }
+        } else {
+            logMsg("⚠️ Trap triggered, but BLE not connected.");
+        }
+
+        // Wait 2 seconds before listening again
+        setTimeout(() => {
+            isCoolingDown = false;
+            document.getElementById('vol-bar').style.background = "#0f0"; // Back to green
+            logMsg("Ready for next call.");
+        }, 2000);
+    }
+</script>
+</body>
+</html>
