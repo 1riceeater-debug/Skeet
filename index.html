@@ -1,39 +1,45 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Voice Skeet Puller V5</title>
+    <title>Voice Skeet Puller V6</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         body { font-family: Arial; text-align: center; margin-top: 15px; background: #222; color: white;}
+        
+        /* Row 1: Top Buttons */
         .top-btn { padding: 12px; font-size: 18px; margin: 5px; border-radius: 8px; width: 40%; font-weight: bold; border:none;}
         
-        /* Arming Panel */
-        #arm-panel { display: flex; justify-content: center; margin: 10px 5%; flex-wrap: wrap; }
+        /* Arming Status */
+        #arm-status { font-size: 20px; font-weight: bold; color: #aaa; margin: 8px 0; min-height: 24px;}
+        
+        /* Row 2: Arming Panel */
+        #arm-panel { display: flex; justify-content: center; margin: 8px 2%; flex-wrap: wrap; gap: 4px; }
         .arm-btn { 
-            flex: 1 1 18%; padding: 12px 2px; margin: 3px; font-size: 18px; font-weight: bold;
-            background: #444; color: white; border: 2px solid #222; border-radius: 8px;
+            flex: 1 1 20%; padding: 10px 0px; font-size: 16px; font-weight: bold;
+            background: #444; color: white; border: 2px solid #222; border-radius: 8px; cursor: pointer;
         }
         .arm-btn.active { background: #e74c3c; border-color: #ffeb3b; color: white;} 
-        #arm-status { font-size: 22px; font-weight: bold; color: #aaa; margin-top: 5px; min-height: 25px;}
+        .cancel-btn { background: #8b0000; color: #fff; border-color: #ff4444; flex: 1 1 30%; } /* Distinct Cancel Button */
         
-        /* Delay Controls */
-        .delay-row { display: flex; justify-content: space-between; align-items: center; margin: 5px 5%; background: #333; padding: 8px 15px; border-radius: 8px; }
-        .delay-label { font-size: 16px; font-weight: bold;}
-        .delay-btn { background: #555; color: white; border: none; padding: 8px 18px; font-size: 20px; border-radius: 5px; font-weight: bold;}
-        .delay-val { font-size: 18px; font-weight: bold; width: 50px; display: inline-block; text-align: center;}
-        
-        .dr-btn { background: #444; color: white; border: 2px solid #222; padding: 10px; border-radius: 8px; font-weight: bold; font-size: 16px; width: 90%; margin: 5px auto;}
+        /* Row 3: Delay Controls (Minimized Height) */
+        .delay-row { display: flex; justify-content: space-between; align-items: center; margin: 6px 5%; background: #333; padding: 4px 12px; border-radius: 8px; }
+        .delay-label { font-size: 15px; font-weight: bold;}
+        .delay-btn { background: #555; color: white; border: none; padding: 6px 16px; font-size: 18px; border-radius: 5px; font-weight: bold; cursor: pointer;}
+        .delay-val { font-size: 16px; font-weight: bold; width: 45px; display: inline-block; text-align: center;}
         
         /* Volume / Sliders */
-        #vol-bar-container { width: 90%; height: 20px; background: #444; margin: 10px auto; border-radius: 10px; overflow: hidden; }
+        #vol-bar-container { width: 90%; height: 18px; background: #444; margin: 10px auto; border-radius: 9px; overflow: hidden; }
         #vol-bar { width: 0%; height: 100%; background: #0f0; transition: width 0.1s; }
-        #threshVal { font-size: 14px; font-weight: bold; color: #ffeb3b; } /* Font size reduced */
-        #log { margin-top: 10px; color: #0f0; text-align: left; padding: 10px; font-size: 13px; background: #111; height: 150px; overflow-y: scroll; border: 1px solid #444;}
+        #threshLabel { font-size: 14px; }
+        #threshVal { font-size: 13px; font-weight: bold; color: #ffeb3b; } /* Font size reduced */
+        
+        /* Debug Log */
+        #log { margin-top: 10px; color: #0f0; text-align: left; padding: 8px; font-size: 12px; background: #111; height: 150px; overflow-y: scroll; border: 1px solid #444;}
     </style>
 </head>
 <body>
 
-    <h2>Voice Puller V5</h2>
+    <h2>Voice Puller V6</h2>
     
     <div>
         <button id="connectBtn" class="top-btn" style="background: #007BFF; color: white;">Connect BLE</button>
@@ -43,16 +49,18 @@
     <!-- Arming Status -->
     <div id="arm-status">SAFE / DISARMED</div>
 
-    <!-- Mode Buttons -->
+    <!-- Mode Buttons (Row 2) -->
     <div id="arm-panel">
         <button id="btn-H" class="arm-btn" onclick="setMode('H')">H</button>
         <button id="btn-L" class="arm-btn" onclick="setMode('L')">L</button>
         <button id="btn-D" class="arm-btn" onclick="setMode('D')">D</button>
+        <button id="btn-DR" class="arm-btn" onclick="setMode('DR')">DR</button>
         <button id="btn-HL" class="arm-btn" onclick="setMode('HL')">HL</button>
         <button id="btn-T" class="arm-btn" onclick="setMode('T')">T (H)</button>
+        <button id="btn-CANCEL" class="arm-btn cancel-btn" onclick="cancelMode()">CANCEL</button>
     </div>
 
-    <!-- Delay Controls -->
+    <!-- Delay Controls (Row 3 - Minimized) -->
     <div class="delay-row">
         <span class="delay-label">Delay (D):</span>
         <div>
@@ -69,14 +77,11 @@
             <button class="delay-btn" onclick="adjDelay('DD', 0.1)">+</button>
         </div>
     </div>
-    
-    <!-- Doubles Reverse Toggle -->
-    <button id="btn-DR" class="dr-btn" onclick="toggleDR()">DR: OFF (Normal Sequence)</button>
 
     <!-- Mic Volume -->
     <div id="vol-bar-container"><div id="vol-bar"></div></div>
     
-    <label for="threshSlider" style="font-size: 14px;">Trigger Sensitivity: <span id="threshVal">50</span></label><br>
+    <label id="threshLabel" for="threshSlider">Trigger Sensitivity: <span id="threshVal">50</span></label><br>
     <input type="range" id="threshSlider" min="5" max="150" value="50" style="width: 80%; margin-top: 5px;">
 
     <div id="log">--- Debug Log ---<br></div>
@@ -97,7 +102,6 @@
     // Delay variables
     let dVal = 0.0;
     let ddVal = 0.0;
-    let isDR = false; // Doubles Reverse state
 
     function logMsg(msg) {
         const logDiv = document.getElementById('log');
@@ -114,30 +118,30 @@
         if (type === 'D') {
             dVal = Math.max(0, dVal + amt);
             document.getElementById('val-D').innerText = dVal.toFixed(1) + "s";
-            sendBLECmd("D" + dVal.toFixed(1)); // Send D setting to ESP32
+            sendBLECmd("D" + dVal.toFixed(1)); 
         } else {
             ddVal = Math.max(0, ddVal + amt);
             document.getElementById('val-DD').innerText = ddVal.toFixed(1) + "s";
-            sendBLECmd("DD" + ddVal.toFixed(1)); // Send DD setting to ESP32
+            sendBLECmd("DD" + ddVal.toFixed(1)); 
         }
     };
 
-    window.toggleDR = function() {
-        isDR = !isDR;
-        const btn = document.getElementById('btn-DR');
-        if (isDR) {
-            btn.innerText = "DR: ON (High then Low)";
-            btn.style.background = "#e74c3c";
-        } else {
-            btn.innerText = "DR: OFF (Normal Sequence)";
-            btn.style.background = "#444";
-        }
+    // --- CANCEL LOGIC ---
+    window.cancelMode = function() {
+        armedMode = null;
+        hlStep = 0;
+        document.querySelectorAll('.arm-btn').forEach(btn => btn.classList.remove('active'));
+        
+        const as = document.getElementById('arm-status');
+        as.innerText = "SAFE / DISARMED";
+        as.style.color = "#aaa";
+        logMsg("🚫 Sequence Cancelled. System SAFE.");
     };
 
     // --- ARMING LOGIC ---
     window.setMode = function(mode) {
         if (armedMode === mode) {
-            armedMode = null;
+            armedMode = null; // Toggle off if clicked again
         } else {
             armedMode = mode;
         }
@@ -234,10 +238,13 @@
             setMode(null); // Auto-Disarm
         } 
         else if (armedMode === 'D') {
-            // Apply DR (Reverse) logic
-            // If DR is ON, send D1H (High then Low). If OFF, send D1L (Low then High) or whatever your standard is.
-            cmdToSend = isDR ? 'D1H' : 'D1L'; 
-            lastHouse = cmdToSend;
+            cmdToSend = 'D1H'; // High -> DD -> Low
+            lastHouse = 'D';
+            setMode(null);
+        }
+        else if (armedMode === 'DR') {
+            cmdToSend = 'D1L'; // Low -> DD -> High
+            lastHouse = 'DR';
             setMode(null);
         }
         else if (armedMode === 'HL') {
@@ -254,6 +261,9 @@
         } 
         else if (armedMode === 'T') {
             cmdToSend = lastHouse; 
+            // Check if T is repeating a compound mode, translate to correct BLE command
+            if (cmdToSend === 'D') cmdToSend = 'D1H';
+            if (cmdToSend === 'DR') cmdToSend = 'D1L';
         }
 
         document.getElementById('btn-T').innerText = "T (" + lastHouse + ")";
@@ -266,7 +276,7 @@
         setTimeout(() => {
             isCoolingDown = false;
             document.getElementById('vol-bar').style.background = "#0f0";
-        }, 2000);
+        }, 2000); // 2 Second cooldown between shots
     }
 
     async function sendBLECmd(cmd) {
