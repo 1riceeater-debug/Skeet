@@ -1,13 +1,13 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Voice Skeet Puller V7</title>
+    <title>Voice Skeet Puller V8 (Multi-Sync)</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         body { font-family: Arial; text-align: center; margin-top: 15px; background: #222; color: white;}
         
         /* Row 1: Top Buttons */
-        .top-btn { padding: 12px; font-size: 18px; margin: 5px; border-radius: 8px; width: 40%; font-weight: bold; border:none; cursor: pointer; transition: background 0.3s;}
+        .top-btn { padding: 12px; font-size: 18px; margin: 5px; border-radius: 8px; width: 40%; font-weight: bold; border:none; cursor: pointer;}
         
         /* Arming Status */
         #arm-status { font-size: 20px; font-weight: bold; color: #aaa; margin: 8px 0; min-height: 24px;}
@@ -25,7 +25,7 @@
         .delay-row { display: flex; justify-content: space-between; align-items: center; margin: 6px 5%; background: #333; padding: 4px 12px; border-radius: 8px; }
         .delay-label { font-size: 15px; font-weight: bold;}
         .delay-btn { background: #555; color: white; border: none; padding: 6px 16px; font-size: 18px; border-radius: 5px; font-weight: bold; cursor: pointer;}
-        .delay-val { font-size: 16px; font-weight: bold; width: 45px; display: inline-block; text-align: center;}
+        .delay-val { font-size: 16px; font-weight: bold; width: 45px; display: inline-block; text-align: center; color: #00d2ff;}
         
         /* Volume / Sliders */
         #vol-bar-container { width: 90%; height: 18px; background: #444; margin: 10px auto; border-radius: 9px; overflow: hidden; }
@@ -39,17 +39,15 @@
 </head>
 <body>
 
-    <h2>Voice Puller V7</h2>
+    <h2>Voice Puller V8 (Squad Sync)</h2>
     
     <div>
         <button id="connectBtn" class="top-btn" style="background: #007BFF; color: white;">Connect BLE</button>
         <button id="listenBtn" class="top-btn" style="background: #28A745; color: white;">Turn On Mic</button>
     </div>
     
-    <!-- Arming Status -->
     <div id="arm-status">SAFE / DISARMED</div>
 
-    <!-- Mode Buttons (Row 2) -->
     <div id="arm-panel">
         <button id="btn-H" class="arm-btn" onclick="setMode('H')">H</button>
         <button id="btn-L" class="arm-btn" onclick="setMode('L')">L</button>
@@ -60,7 +58,6 @@
         <button id="btn-CANCEL" class="arm-btn cancel-btn" onclick="cancelMode()">CANCEL</button>
     </div>
 
-    <!-- Delay Controls (Row 3) -->
     <div class="delay-row">
         <span class="delay-label">Delay (D):</span>
         <div>
@@ -78,22 +75,20 @@
         </div>
     </div>
 
-    <!-- Mic Volume -->
     <div id="vol-bar-container"><div id="vol-bar"></div></div>
-    
     <label id="threshLabel" for="threshSlider">Trigger Sensitivity: <span id="threshVal">50</span></label><br>
     <input type="range" id="threshSlider" min="5" max="150" value="50" style="width: 80%; margin-top: 5px;">
 
     <div id="log">--- Debug Log ---<br></div>
 
 <script>
-    // BLE Configuration
     const SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
     const CHAR_RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
+    const CHAR_TX_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"; // Added TX UUID for receiving
     
-    // Global State Variables
     let bleDevice;
-    let bleCharacteristic;
+    let bleCharacteristic; // For Writing
+    let bleTxCharacteristic; // For Reading
     let isBleConnected = false;
 
     let audioContext;
@@ -107,7 +102,6 @@
     let hlStep = 0;         
     let lastHouse = 'H';    
 
-    // Delay variables
     let dVal = 0.0;
     let ddVal = 0.0;
 
@@ -121,40 +115,34 @@
         document.getElementById('threshVal').innerText = threshold;
     }
 
-    // --- DELAY ADJUSTMENTS ---
+    // --- DELAY ADJUSTMENTS (Now purely relies on the ESP32 to confirm) ---
     window.adjDelay = function(type, amt) {
+        if (!isBleConnected) {
+            logMsg("⚠️ Connect BLE to change settings.");
+            return;
+        }
         if (type === 'D') {
-            dVal = Math.max(0, dVal + amt);
-            document.getElementById('val-D').innerText = dVal.toFixed(1) + "s";
-            sendBLECmd("D" + dVal.toFixed(1)); 
+            let temp = Math.max(0, dVal + amt);
+            sendBLECmd("D" + temp.toFixed(1)); 
         } else {
-            ddVal = Math.max(0, ddVal + amt);
-            document.getElementById('val-DD').innerText = ddVal.toFixed(1) + "s";
-            sendBLECmd("DD" + ddVal.toFixed(1)); 
+            let temp = Math.max(0, ddVal + amt);
+            sendBLECmd("DD" + temp.toFixed(1)); 
         }
     };
 
-    // --- CANCEL LOGIC ---
     window.cancelMode = function() {
         armedMode = null;
         hlStep = 0;
         document.querySelectorAll('.arm-btn').forEach(btn => btn.classList.remove('active'));
-        
-        const as = document.getElementById('arm-status');
-        as.innerText = "SAFE / DISARMED";
-        as.style.color = "#aaa";
-        logMsg("🚫 Sequence Cancelled. System SAFE.");
+        document.getElementById('arm-status').innerText = "SAFE / DISARMED";
+        document.getElementById('arm-status').style.color = "#aaa";
     };
 
-    // --- ARMING LOGIC ---
     window.setMode = function(mode) {
-        if (armedMode === mode) {
-            armedMode = null; 
-        } else {
-            armedMode = mode;
-        }
-        hlStep = 0; 
+        if (armedMode === mode) armedMode = null; 
+        else armedMode = mode;
         
+        hlStep = 0; 
         document.querySelectorAll('.arm-btn').forEach(btn => btn.classList.remove('active'));
         if (armedMode) document.getElementById('btn-' + armedMode).classList.add('active');
         
@@ -170,17 +158,12 @@
         }
     };
 
-    // --- BLE CONNECTION TOGGLE ---
+    // --- BLE CONNECTION & SYNC LOGIC ---
     document.getElementById('connectBtn').addEventListener('click', async () => {
-        // Disconnect Logic
         if (isBleConnected) {
-            if (bleDevice && bleDevice.gatt.connected) {
-                bleDevice.gatt.disconnect();
-            }
+            if (bleDevice && bleDevice.gatt.connected) bleDevice.gatt.disconnect();
             return;
         }
-
-        // Connect Logic
         try {
             logMsg("Searching for BLUE Puller...");
             bleDevice = await navigator.bluetooth.requestDevice({
@@ -188,17 +171,27 @@
                 optionalServices:[SERVICE_UUID]
             });
             
-            // Listen for unexpected disconnects
             bleDevice.addEventListener('gattserverdisconnected', handleBleDisconnect);
             
             const server = await bleDevice.gatt.connect();
             const service = await server.getPrimaryService(SERVICE_UUID);
+            
+            // Get Write Channel
             bleCharacteristic = await service.getCharacteristic(CHAR_RX_UUID);
+            
+            // Get Read/Notify Channel
+            bleTxCharacteristic = await service.getCharacteristic(CHAR_TX_UUID);
+            await bleTxCharacteristic.startNotifications();
+            bleTxCharacteristic.addEventListener('characteristicvaluechanged', handleBleNotifications);
             
             isBleConnected = true;
             document.getElementById('connectBtn').innerText = "Disconnect BLE";
-            document.getElementById('connectBtn').style.background = "#dc3545"; // Red
-            logMsg("BLE Connected successfully.");
+            document.getElementById('connectBtn').style.background = "#dc3545"; 
+            logMsg("BLE Connected! Syncing trap data...");
+
+            // Instantly ask ESP32 for current settings so the screen matches reality
+            setTimeout(() => { sendBLECmd("?"); }, 500);
+
         } catch (error) {
             logMsg("BLE Error: " + error);
         }
@@ -207,28 +200,66 @@
     function handleBleDisconnect() {
         isBleConnected = false;
         bleCharacteristic = null;
+        bleTxCharacteristic = null;
         document.getElementById('connectBtn').innerText = "Connect BLE";
-        document.getElementById('connectBtn').style.background = "#007BFF"; // Blue back to default
+        document.getElementById('connectBtn').style.background = "#007BFF"; 
         logMsg("BLE Disconnected.");
     }
 
-    // --- MIC TOGGLE LOGIC ---
+    // --- THE MULTI-USER SYNC ENGINE ---
+    // This listens to broadcasts from the ESP32 and updates the screen
+    function handleBleNotifications(event) {
+        let decoder = new TextDecoder('utf-8');
+        let msg = decoder.decode(event.target.value).trim();
+        
+        logMsg("📡 [TRAP]: " + msg); // Log everything the trap says
+
+        // If another phone (or this one) changes a setting, update the UI!
+        if (msg.includes("Delay Set:")) {
+            let match = msg.match(/Delay Set: ([\d\.]+)/);
+            if (match) {
+                dVal = parseFloat(match[1]);
+                document.getElementById('val-D').innerText = dVal.toFixed(1) + "s";
+            }
+        }
+        if (msg.includes("Dbl Dly Set:")) {
+            let match = msg.match(/Dbl Dly Set: ([\d\.]+)/);
+            if (match) {
+                ddVal = parseFloat(match[1]);
+                document.getElementById('val-DD').innerText = ddVal.toFixed(1) + "s";
+            }
+        }
+        
+        // Handle the "?" Status Sync
+        if (msg.includes("STATUS:")) {
+            let dMatch = msg.match(/Delay: ([\d\.]+)/);
+            if(dMatch) { 
+                dVal = parseFloat(dMatch[1]); 
+                document.getElementById('val-D').innerText = dVal.toFixed(1) + "s"; 
+            }
+            let ddMatch = msg.match(/Dbl: ([\d\.]+)/);
+            if(ddMatch) { 
+                ddVal = parseFloat(ddMatch[1]); 
+                document.getElementById('val-DD').innerText = ddVal.toFixed(1) + "s"; 
+            }
+        }
+    }
+
+    // --- MIC LOGIC ---
     document.getElementById('listenBtn').addEventListener('click', async () => {
-        // Mute / Turn Off Logic
         if (isMicActive) {
-            if (audioStream) audioStream.getTracks().forEach(track => track.stop()); // Kills hardware mic
+            if (audioStream) audioStream.getTracks().forEach(track => track.stop()); 
             if (audioContext && audioContext.state !== 'closed') audioContext.close();
             if (animId) cancelAnimationFrame(animId);
             
             isMicActive = false;
             document.getElementById('listenBtn').innerText = "Turn On Mic";
-            document.getElementById('listenBtn').style.background = "#28A745"; // Green
+            document.getElementById('listenBtn').style.background = "#28A745"; 
             document.getElementById('vol-bar').style.width = "0%";
             logMsg("Mic Muted.");
             return;
         }
 
-        // Turn On Logic
         try {
             audioStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
             window.AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -242,9 +273,8 @@
 
             isMicActive = true;
             document.getElementById('listenBtn').innerText = "Mute Mic 🎤";
-            document.getElementById('listenBtn').style.background = "#dc3545"; // Red indicating it's "Hot"
-            logMsg("Mic successfully activated!");
-
+            document.getElementById('listenBtn').style.background = "#dc3545"; 
+            
             const analyser = audioContext.createAnalyser();
             const microphone = audioContext.createMediaStreamSource(audioStream);
             analyser.fftSize = 256;
@@ -282,15 +312,15 @@
         if (armedMode === 'H' || armedMode === 'L') {
             cmdToSend = armedMode;
             lastHouse = armedMode;
-            setMode(null); // Auto-Disarm
+            setMode(null); 
         } 
         else if (armedMode === 'D') {
-            cmdToSend = 'D1H'; // High -> DD -> Low
+            cmdToSend = 'D1H'; 
             lastHouse = 'D';
             setMode(null);
         }
         else if (armedMode === 'DR') {
-            cmdToSend = 'D1L'; // Low -> DD -> High
+            cmdToSend = 'D1L'; 
             lastHouse = 'DR';
             setMode(null);
         }
@@ -313,7 +343,6 @@
         }
 
         document.getElementById('btn-T').innerText = "T (" + lastHouse + ")";
-        logMsg("💥 LOUD NOISE (Vol: " + Math.round(vol) + ")");
         
         if (cmdToSend !== '') {
             await sendBLECmd(cmdToSend);
@@ -330,7 +359,6 @@
             try {
                 let encoder = new TextEncoder('utf-8');
                 await bleCharacteristic.writeValue(encoder.encode(cmd));
-                logMsg("🚀 SENT BLE: '" + cmd + "'");
             } catch (err) {
                 logMsg("BLE Send Failed: " + err);
             }
