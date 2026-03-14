@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Voice Skeet Puller V14</title>
+    <title>Voice Skeet Puller V15</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         body { font-family: Arial; text-align: center; margin-top: 15px; background: #222; color: white;}
@@ -28,14 +28,16 @@
         #vol-bar { width: 0%; height: 100%; background: #0f0; transition: width 0.1s, background 0.2s; }
         #threshLabel { font-size: 14px; }
         #threshVal { font-size: 13px; font-weight: bold; color: #ffeb3b; }
-        #md-display { font-size: 14px; color: #aaa; margin-top: 5px; font-weight: bold;}
+        
+        /* Mute Delay Text with color transition */
+        #md-display { font-size: 14px; color: #aaa; margin-top: 5px; font-weight: bold; transition: color 0.2s;}
         
         #log { margin-top: 15px; color: #0f0; text-align: left; padding: 8px; font-size: 12px; background: #111; height: 150px; overflow-y: scroll; border: 1px solid #444;}
     </style>
 </head>
 <body>
 
-    <h2>Voice Puller V14</h2>
+    <h2>Voice Puller V15</h2>
     
     <div class="top-row">
         <button id="connectBtn" class="top-btn" style="background: #007BFF; color: white;">Connect BLE</button>
@@ -210,8 +212,10 @@
     window.cancelMode = function(fromSync = false) {
         armedMode = null;
         hlStep = 0;
-        micState = 0; // Reset Lockout
+        micState = 0; 
         document.getElementById('vol-bar').style.background = "#0f0";
+        document.getElementById('md-display').style.color = "#aaa"; // Reset MD Text color
+        
         updateArmUI();
         if (!fromSync) logMsg(isVoiceMode ? "🚫 Sequence Cancelled. System SAFE." : "🔄 Sequence Reset.");
         if (!fromSync && isBleConnected && isSyncEnabled) sendBLECmd("MODE:CANCEL", true); 
@@ -437,7 +441,7 @@
                 // Wait for Quiet (Hysteresis: must drop below 80% of threshold)
                 else if (micState === 2 && averageVolume < (threshold * 0.8)) {
                     micState = 0;
-                    document.getElementById('vol-bar').style.background = "#0f0"; // Back to Green
+                    document.getElementById('vol-bar').style.background = "#0f0"; 
                     logMsg("Quiet detected. Ready for next call.");
                 }
 
@@ -457,13 +461,14 @@
         if (animId) cancelAnimationFrame(animId);
         
         isMicActive = false;
-        micState = 0; // Reset state
+        micState = 0; 
         
         if (resetUI) {
             document.getElementById('listenBtn').innerText = "Turn On Mic";
             document.getElementById('listenBtn').style.background = "#28A745"; 
             document.getElementById('vol-bar').style.background = "#0f0";
             document.getElementById('vol-bar').style.width = "0%";
+            document.getElementById('md-display').style.color = "#aaa"; // Reset MD Text color
             logMsg("Mic Muted.");
         }
     }
@@ -483,7 +488,10 @@
         if (!armedMode || micState !== 0) return; 
 
         micState = 1; // Stage 1: Locked out / Firing
-        document.getElementById('vol-bar').style.background = "#f00"; // Red
+        
+        // VISUAL CUES: Turn Volume Bar and Mute Delay text RED
+        document.getElementById('vol-bar').style.background = "#f00"; 
+        document.getElementById('md-display').style.color = "#ff4444"; 
         
         let cmdToSend = '';
 
@@ -511,7 +519,7 @@
 
         updateArmUI();
         
-        // Calculate Total Lockout: (Trap Delay * 1000) + Mute Delay
+        // Calculate Total Lockout
         let totalLockout = (dVal * 1000) + muteDelay;
         logMsg(`💥 LOUD NOISE (Vol: ${Math.round(vol)}) | Lockout: ${totalLockout}ms`);
         
@@ -520,6 +528,7 @@
         setTimeout(() => {
             micState = 2; // Stage 2: Wait for Quiet
             document.getElementById('vol-bar').style.background = "#f39c12"; // Orange
+            document.getElementById('md-display').style.color = "#aaa"; // Revert MD Text color
             logMsg("Lockout over. Waiting for quiet...");
         }, totalLockout); 
     }
