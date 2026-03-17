@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Voice Skeet Puller V17</title>
+    <title>Voice Skeet Puller V18</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         body { font-family: Arial; text-align: center; margin-top: 15px; background: #222; color: white;}
@@ -26,7 +26,7 @@
 </head>
 <body>
 
-    <h2>Voice Puller V17 (ACK Protocol)</h2>
+    <h2>Voice Puller V18 (Stable ACK)</h2>
     
     <div class="top-row">
         <button id="connectBtn" class="top-btn" style="background: #007BFF; color: white;">Connect BLE</button>
@@ -95,11 +95,6 @@
     let ddVal = 0.0;
     let muteDelay = 500; 
 
-    // --- ACK PROTOCOL VARIABLES ---
-    let syncRetries = 0;
-    let syncTimer = null;
-    let syncPendingCmd = null;
-
     function logMsg(msg) {
         const logDiv = document.getElementById('log');
         logDiv.innerHTML = msg + "<br>" + logDiv.innerHTML;
@@ -127,8 +122,9 @@
         else { btn.innerText = "Mode: MANUAL"; btn.style.background = "#fd7e14"; cancelMode(true); }
         updateArmUI();
 
+        // Broadcast to squad/glove
         if (!fromSync && isBleConnected && isSyncEnabled) {
-            sendReliableCmd(isVoiceMode ? "MODE:VOICE" : "MODE:MANUAL");
+            sendBLECmd(isVoiceMode ? "MODE:VOICE" : "MODE:MANUAL", true);
         }
     }
 
@@ -166,6 +162,7 @@
         document.getElementById('vol-bar').style.background = "#0f0";
         document.getElementById('md-display').style.color = "#aaa"; 
         updateArmUI();
+        if (!fromSync) logMsg(isVoiceMode ? "🚫 Sequence Cancelled. System SAFE." : "🔄 Sequence Reset.");
         if (!fromSync && isBleConnected && isSyncEnabled) sendBLECmd("MODE:CANCEL", true); 
     };
 
@@ -210,28 +207,6 @@
         }
     };
 
-    // --- RELIABLE SEND LOGIC (ACK PROTOCOL) ---
-    function sendReliableCmd(cmd) {
-        if (!isBleConnected) return;
-        clearTimeout(syncTimer);
-        syncPendingCmd = cmd;
-        syncRetries = 0;
-        attemptSendReliable();
-    }
-
-    async function attemptSendReliable() {
-        if (syncRetries > 5) {
-            logMsg("⚠️ Sync Failed after 5 retries. Glove may be offline.");
-            clearTimeout(syncTimer);
-            syncPendingCmd = null;
-            return;
-        }
-        syncRetries++;
-        logMsg(`🔄 Sync Attempt ${syncRetries}: ${syncPendingCmd}`);
-        await sendBLECmd(syncPendingCmd, true);
-        syncTimer = setTimeout(attemptSendReliable, 250); // Retry every 250ms
-    }
-
     document.getElementById('connectBtn').addEventListener('click', async () => {
         if (isBleConnected) { if (bleDevice && bleDevice.gatt.connected) bleDevice.gatt.disconnect(); return; }
         try {
@@ -264,30 +239,23 @@
         let msg = new TextDecoder('utf-8').decode(event.target.value).trim();
         if (msg === "" || msg.startsWith("Err: Unknown")) return;
 
-        // 1. Acknowledge Handlers (From Glove)
-        if (msg === "ACK:MODE") {
-            if (syncPendingCmd && syncPendingCmd.startsWith("MODE:")) {
-                clearTimeout(syncTimer);
-                syncPendingCmd = null;
-                logMsg("✅ Glove Synced Successfully.");
+        // 1. STAGGERED ACK LOGIC (Prevents broadcast storms)
+        if (msg === "GLOVE: CONNECTED") {
+            logMsg("🤝 Glove joined. Sending ACK...");
+            sendBLECmd("ACK:GLOVE", true); 
+            if (isSyncEnabled) {
+                // Wait 600ms before sending the Mode Sync to let the airwaves clear
+                setTimeout(() => { sendBLECmd(isVoiceMode ? "MODE:VOICE" : "MODE:MANUAL", true); }, 600);
             }
             return;
         }
-
-        // 2. Glove Initiated Commands
-        if (msg === "GLOVE: CONNECTED") {
-            sendBLECmd("ACK:GLOVE", true); // Send ACK back to Glove
-            logMsg("🤝 Glove joined. Pushing sync...");
-            if (isSyncEnabled) setTimeout(() => { sendReliableCmd(isVoiceMode ? "MODE:VOICE" : "MODE:MANUAL"); }, 100);
-            return;
-        }
         
-        if (msg === "AH") { sendBLECmd("ACK:AH", true); setMode('H', true); return; }
-        if (msg === "AL") { sendBLECmd("ACK:AL", true); setMode('L', true); return; }
-        if (msg === "AD") { sendBLECmd("ACK:AD", true); setMode('D', true); return; }
-        if (msg === "CANCEL") { sendBLECmd("ACK:CANCEL", true); cancelMode(true); return; }
+        if (msg === "AH") { sendBLECmd("ACK:AH", true); setTimeout(() => { setMode('H', true); }, 400); return; }
+        if (msg === "AL") { sendBLECmd("ACK:AL", true); setTimeout(() => { setMode('L', true); }, 400); return; }
+        if (msg === "AD") { sendBLECmd("ACK:AD", true); setTimeout(() => { setMode('D', true); }, 400); return; }
+        if (msg === "CANCEL") { sendBLECmd("ACK:CANCEL", true); setTimeout(() => { cancelMode(true); }, 400); return; }
 
-        // 3. Status and Echoes
+        // 2. Mode Syncs
         if (msg.startsWith("MODE:")) {
             if (!isSyncEnabled) return; 
             if (msg === "MODE:VOICE") { setVoiceMode(true, true); return; }
@@ -306,6 +274,7 @@
             return; 
         }
 
+        // 3. Settings / Echoes
         if (msg.includes("Delay Set:")) {
             let match = msg.match(/Delay Set: ([\d\.]+)/);
             if (match) { dVal = parseFloat(match[1]); document.getElementById('val-D').innerText = dVal.toFixed(1) + "s"; }
@@ -367,7 +336,6 @@
         }
     }, 1500);
 
-    // --- MIC LOGIC ---
     async function startMic() {
         try {
             audioStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
