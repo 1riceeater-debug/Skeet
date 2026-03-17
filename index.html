@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Voice Skeet Puller V15</title>
+    <title>Voice Skeet Puller V16</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         body { font-family: Arial; text-align: center; margin-top: 15px; background: #222; color: white;}
@@ -28,8 +28,6 @@
         #vol-bar { width: 0%; height: 100%; background: #0f0; transition: width 0.1s, background 0.2s; }
         #threshLabel { font-size: 14px; }
         #threshVal { font-size: 13px; font-weight: bold; color: #ffeb3b; }
-        
-        /* Mute Delay Text with color transition */
         #md-display { font-size: 14px; color: #aaa; margin-top: 5px; font-weight: bold; transition: color 0.2s;}
         
         #log { margin-top: 15px; color: #0f0; text-align: left; padding: 8px; font-size: 12px; background: #111; height: 150px; overflow-y: scroll; border: 1px solid #444;}
@@ -37,7 +35,7 @@
 </head>
 <body>
 
-    <h2>Voice Puller V15</h2>
+    <h2>Voice Puller V16</h2>
     
     <div class="top-row">
         <button id="connectBtn" class="top-btn" style="background: #007BFF; color: white;">Connect BLE</button>
@@ -82,7 +80,6 @@
     <label id="threshLabel" for="threshSlider">Trigger Sensitivity: <span id="threshVal">50</span></label><br>
     <input type="range" id="threshSlider" min="5" max="150" value="50" style="width: 80%; margin-top: 5px;">
     
-    <!-- Mute Delay Readout -->
     <div id="md-display">Mute Delay (MD): 500ms</div>
 
     <div id="log">--- Debug Log ---<br></div>
@@ -94,12 +91,12 @@
     
     let bleDevice, bleCharacteristic, bleTxCharacteristic;
     let isBleConnected = false;
+    let bleQueue = Promise.resolve(); // V16 Fix: Safely queues BLE transmissions
 
     let audioContext, audioStream, animId;
     let isMicActive = false;
     let threshold = 50;
     
-    // STATE MACHINE: 0=Ready, 1=Lockout (Timer), 2=Wait for Quiet
     let micState = 0; 
     let wasMicActiveBeforeSleep = false;
 
@@ -112,7 +109,7 @@
 
     let dVal = 0.0;
     let ddVal = 0.0;
-    let muteDelay = 500; // Milliseconds
+    let muteDelay = 500; 
 
     function logMsg(msg) {
         const logDiv = document.getElementById('log');
@@ -122,6 +119,25 @@
     document.getElementById('threshSlider').oninput = function() {
         threshold = parseInt(this.value);
         document.getElementById('threshVal').innerText = threshold;
+    }
+
+    // --- V16 FIX: BLE TRANSMISSION QUEUE ---
+    function sendBLECmd(cmd, silent = false) {
+        if (!bleCharacteristic || !isBleConnected) return;
+
+        // Chain the promises. If one is currently sending, the next one politely waits.
+        bleQueue = bleQueue.then(async () => {
+            try {
+                let encoder = new TextEncoder('utf-8');
+                await bleCharacteristic.writeValue(encoder.encode(cmd));
+                if (!silent) logMsg("🚀 SENT BLE: '" + cmd + "'");
+                
+                // Mandatory 150ms pause to let the iOS GATT service clear its buffer
+                await new Promise(resolve => setTimeout(resolve, 150)); 
+            } catch (err) {
+                logMsg("BLE Send Failed: " + err);
+            }
+        });
     }
 
     // --- TOGGLE BUTTONS ---
@@ -214,7 +230,7 @@
         hlStep = 0;
         micState = 0; 
         document.getElementById('vol-bar').style.background = "#0f0";
-        document.getElementById('md-display').style.color = "#aaa"; // Reset MD Text color
+        document.getElementById('md-display').style.color = "#aaa"; 
         
         updateArmUI();
         if (!fromSync) logMsg(isVoiceMode ? "🚫 Sequence Cancelled. System SAFE." : "🔄 Sequence Reset.");
@@ -305,7 +321,13 @@
             document.getElementById('connectBtn').innerText = "Disconnect BLE";
             document.getElementById('connectBtn').style.background = "#dc3545"; 
             logMsg("BLE Connected! Syncing data...");
-            setTimeout(() => { sendBLECmd("?"); }, 500);
+
+            // Queue initial sync commands gracefully
+            setTimeout(() => { 
+                sendBLECmd("?"); 
+                sendBLECmd(isVoiceMode ? "MODE:VOICE" : "MODE:MANUAL", true);
+            }, 500);
+
         } catch (error) { logMsg("BLE Error: " + error); }
     });
 
@@ -323,7 +345,6 @@
         let msg = new TextDecoder('utf-8').decode(event.target.value).trim();
         if (msg === "" || msg.startsWith("Err: Unknown")) return;
 
-        // Mode Sync Handling
         if (msg.startsWith("MODE:")) {
             if (!isSyncEnabled) return; 
             if (msg === "MODE:VOICE") { setVoiceMode(true, true); return; }
@@ -342,7 +363,6 @@
             return; 
         }
 
-        // Delay & Mute Delay Sync Handling
         if (msg.includes("Delay Set:")) {
             let match = msg.match(/Delay Set: ([\d\.]+)/);
             if (match) { dVal = parseFloat(match[1]); document.getElementById('val-D').innerText = dVal.toFixed(1) + "s"; }
@@ -365,16 +385,15 @@
             if(mdMatch) { muteDelay = parseInt(mdMatch[1]); document.getElementById('md-display').innerText = "Mute Delay (MD): " + muteDelay + "ms"; }
         }
 
-        logMsg("📡 [TRAP]: " + msg);
+        logMsg("📡[TRAP]: " + msg);
 
-        // Keep physical button presses tracked in T mode
         if (msg === "CMD: High") { lastHouse = 'H'; updateArmUI(); }
         else if (msg === "CMD: Low") { lastHouse = 'L'; updateArmUI(); }
         else if (msg === "CMD: D1H" || msg === "CMD: Doubles") { lastHouse = 'D'; updateArmUI(); }
         else if (msg === "CMD: D1L") { lastHouse = 'DR'; updateArmUI(); }
     }
 
-    // --- MIC AUTO-RESUME (OPTION 3) ---
+    // --- MIC AUTO-RESUME ---
     document.addEventListener("visibilitychange", () => {
         if (document.hidden) {
             if (isMicActive) {
@@ -397,7 +416,6 @@
         if (isMicActive && !document.hidden) {
             let trackAlive = audioStream && audioStream.getTracks().length > 0 && audioStream.getTracks()[0].readyState === 'live';
             let contextAlive = audioContext && audioContext.state === 'running';
-
             if (!trackAlive || !contextAlive) {
                 logMsg("⚠️ WARNING: iOS killed the mic stream. Resetting UI.");
                 stopMic(true);
@@ -412,7 +430,6 @@
             window.AudioContext = window.AudioContext || window.webkitAudioContext;
             audioContext = new window.AudioContext();
             if (audioContext.state === 'suspended') await audioContext.resume();
-            
             if (audioContext.state !== 'running') { logMsg("ERROR: Audio Engine failed."); return; }
 
             isMicActive = true;
@@ -434,17 +451,14 @@
                 
                 document.getElementById('vol-bar').style.width = Math.min(100, (averageVolume / 1.5)) + "%";
 
-                // STATE MACHINE LOGIC
                 if (micState === 0 && averageVolume > threshold && isVoiceMode) {
                     processVoiceTrigger(averageVolume);
                 } 
-                // Wait for Quiet (Hysteresis: must drop below 80% of threshold)
                 else if (micState === 2 && averageVolume < (threshold * 0.8)) {
                     micState = 0;
                     document.getElementById('vol-bar').style.background = "#0f0"; 
                     logMsg("Quiet detected. Ready for next call.");
                 }
-
                 animId = requestAnimationFrame(checkVolume);
             }
             checkVolume();
@@ -468,7 +482,7 @@
             document.getElementById('listenBtn').style.background = "#28A745"; 
             document.getElementById('vol-bar').style.background = "#0f0";
             document.getElementById('vol-bar').style.width = "0%";
-            document.getElementById('md-display').style.color = "#aaa"; // Reset MD Text color
+            document.getElementById('md-display').style.color = "#aaa"; 
             logMsg("Mic Muted.");
         }
     }
@@ -487,18 +501,13 @@
     async function processVoiceTrigger(vol) {
         if (!armedMode || micState !== 0) return; 
 
-        micState = 1; // Stage 1: Locked out / Firing
-        
-        // VISUAL CUES: Turn Volume Bar and Mute Delay text RED
+        micState = 1; 
         document.getElementById('vol-bar').style.background = "#f00"; 
         document.getElementById('md-display').style.color = "#ff4444"; 
         
         let cmdToSend = '';
 
-        if (armedMode === 'H' || armedMode === 'L') {
-            cmdToSend = armedMode;
-            cancelMode(false); 
-        } 
+        if (armedMode === 'H' || armedMode === 'L') { cmdToSend = armedMode; cancelMode(false); } 
         else if (armedMode === 'D') { cmdToSend = 'D1H'; cancelMode(false); }
         else if (armedMode === 'DR') { cmdToSend = 'D1L'; cancelMode(false); }
         else if (armedMode === 'HL') {
@@ -518,31 +527,17 @@
         }
 
         updateArmUI();
-        
-        // Calculate Total Lockout
         let totalLockout = (dVal * 1000) + muteDelay;
         logMsg(`💥 LOUD NOISE (Vol: ${Math.round(vol)}) | Lockout: ${totalLockout}ms`);
         
-        if (cmdToSend !== '') await sendBLECmd(cmdToSend);
+        if (cmdToSend !== '') sendBLECmd(cmdToSend); // Handled by queue now
 
         setTimeout(() => {
-            micState = 2; // Stage 2: Wait for Quiet
-            document.getElementById('vol-bar').style.background = "#f39c12"; // Orange
-            document.getElementById('md-display').style.color = "#aaa"; // Revert MD Text color
+            micState = 2; 
+            document.getElementById('vol-bar').style.background = "#f39c12"; 
+            document.getElementById('md-display').style.color = "#aaa"; 
             logMsg("Lockout over. Waiting for quiet...");
         }, totalLockout); 
-    }
-
-    async function sendBLECmd(cmd, silent = false) {
-        if (bleCharacteristic && isBleConnected) {
-            try {
-                let encoder = new TextEncoder('utf-8');
-                await bleCharacteristic.writeValue(encoder.encode(cmd));
-                if (!silent) logMsg("🚀 SENT BLE: '" + cmd + "'");
-            } catch (err) {
-                logMsg("BLE Send Failed: " + err);
-            }
-        }
     }
 </script>
 </body>
