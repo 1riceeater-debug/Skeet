@@ -1,8 +1,16 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>AI Skeet Puller V19.1</title>
+    <title>AI Skeet Puller V19.2</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- Define Module hook BEFORE EI script so onRuntimeInitialized is captured -->
+    <script>
+        window.Module = window.Module || {};
+        window.Module.onRuntimeInitialized = function() {
+            // Signal the main app that the WASM classifier is ready
+            window._eiReady = true;
+        };
+    </script>
     <!-- Load the Edge Impulse AI Engine (must be in same folder) -->
     <script src="edge-impulse-standalone.js"></script>
     <style>
@@ -136,24 +144,33 @@
     };
 
     // =====================================================================
-    // EDGE IMPULSE AI ENGINE
+    // EDGE IMPULSE AI ENGINE — correct Emscripten / standalone init pattern
     // =====================================================================
-    async function initAI() {
-        if (classifierInitialized) return true;
-        logMsg("🧠 Initializing AI Engine...");
-        document.getElementById('ai-status-row').innerText = "Loading AI engine...";
-        try {
-            await window.Module.init();
+    // The <script> block above the EI script tag defines Module.onRuntimeInitialized
+    // BEFORE the WASM loads, so the callback sets window._eiReady = true.
+    // We poll for that flag here and mark the classifier ready when it fires.
+    // This handles both: (a) WASM loads fast, (b) WASM loads after page script runs.
+
+    function pollForAiReady() {
+        if (classifierInitialized) return;
+        if (window._eiReady && window.Module && typeof window.Module.classify === 'function') {
             classifierInitialized = true;
             logMsg("✅ AI Engine Ready!");
             document.getElementById('ai-status-row').innerText = "AI engine loaded ✅";
-            return true;
-        } catch (err) {
-            logMsg("❌ AI Init Error: " + err);
-            document.getElementById('ai-status-row').innerText = "AI engine FAILED — volume mode only";
-            return false;
+            document.getElementById('ai-confidence').innerText = "AI Confidence: Listening...";
+            return;
+        }
+        // Not ready yet — check again in 200ms (gives up to ~10s before logging warning)
+        if (!pollForAiReady._count) pollForAiReady._count = 0;
+        pollForAiReady._count++;
+        if (pollForAiReady._count < 50) {
+            setTimeout(pollForAiReady, 200);
+        } else {
+            logMsg("⚠️ AI engine did not load. Check edge-impulse-standalone.js is in the same folder. Running volume-only mode.");
+            document.getElementById('ai-status-row').innerText = "Volume mode (AI not found)";
         }
     }
+    setTimeout(pollForAiReady, 300);
 
     // Called with 16000 samples of float32 audio
     function runAiInference(dataArray) {
@@ -192,12 +209,11 @@
     // MIC START / STOP  (mirrors V18 architecture exactly)
     // =====================================================================
     async function startMic() {
-        // Try to load AI engine (non-blocking — falls back to volume if unavailable)
-        if (window.Module) {
-            initAI(); // fire and forget; mic starts regardless
+        // AI engine init is handled by onRuntimeInitialized / pollForAiReady above.
+        if (classifierInitialized) {
+            logMsg("🧠 AI mode active.");
         } else {
-            logMsg("⚠️ Edge Impulse module not found — using volume detection only.");
-            document.getElementById('ai-status-row').innerText = "Volume mode (no AI module)";
+            logMsg("⏳ AI engine not ready yet — volume detection active until it loads.");
         }
 
         try {
@@ -224,23 +240,23 @@
             const freqData = new Uint8Array(analyser.frequencyBinCount);
 
             // --- AI ScriptProcessor at 16kHz (4096 samples ≈ 250ms chunks) ---
-            if (classifierInitialized || window.Module) {
-                aiProcessor = audioContext.createScriptProcessor(4096, 1, 1);
-                source.connect(aiProcessor);
-                aiProcessor.connect(audioContext.destination);
+            // Always create it — runs as soon as classifierInitialized becomes true,
+            // even if the engine finishes loading after the mic is already on.
+            aiProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+            source.connect(aiProcessor);
+            aiProcessor.connect(audioContext.destination);
 
-                aiProcessor.onaudioprocess = function(e) {
-                    if (!isMicActive || micState === 1) return;
-                    const inputData = e.inputBuffer.getChannelData(0);
-                    for (let i = 0; i < inputData.length; i++) audioDataBuffer.push(inputData[i]);
+            aiProcessor.onaudioprocess = function(e) {
+                if (!isMicActive || micState === 1) return;
+                const inputData = e.inputBuffer.getChannelData(0);
+                for (let i = 0; i < inputData.length; i++) audioDataBuffer.push(inputData[i]);
 
-                    // Accumulate 1 second (16000 samples) then infer with sliding window
-                    if (audioDataBuffer.length >= 16000) {
-                        if (classifierInitialized) runAiInference(audioDataBuffer.slice(0, 16000));
-                        audioDataBuffer = audioDataBuffer.slice(4000); // slide 250ms
-                    }
-                };
-            }
+                // Accumulate 1 second (16000 samples) then infer with sliding window
+                if (audioDataBuffer.length >= 16000) {
+                    if (classifierInitialized) runAiInference(audioDataBuffer.slice(0, 16000));
+                    audioDataBuffer = audioDataBuffer.slice(4000); // slide 250ms
+                }
+            };
 
             // --- Volume animation loop (V18 style) ---
             function checkVolume() {
