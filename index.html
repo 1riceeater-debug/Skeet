@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>AI Skeet Puller V19.4</title>
+    <title>AI Skeet Puller V19.5</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <!-- Define Module hook BEFORE EI script so onRuntimeInitialized is captured -->
     <script>
@@ -39,7 +39,7 @@
 </head>
 <body>
 
-    <h2>AI Puller V19.4 (Edge Impulse)</h2>
+    <h2>AI Puller V19.5 (Edge Impulse)</h2>
     
     <div class="top-row">
         <button id="connectBtn" class="top-btn" style="background: #007BFF; color: white;">Connect BLE</button>
@@ -48,6 +48,9 @@
     <div class="top-row">
         <button id="vmBtn" class="top-btn" style="background: #9b59b6; color: white;">Mode: VOICE</button>
         <button id="syncBtn" class="top-btn" style="background: #17a2b8; color: white;">Sync: ON</button>
+    </div>
+    <div class="top-row">
+        <button id="aiBtn" class="top-btn" style="background: #27ae60; color: white;">AI: ON</button>
     </div>
     
     <div id="arm-status">SAFE / DISARMED</div>
@@ -149,29 +152,31 @@
     // EI standalone builds expose the classifier via ONE of these names
     // depending on which SDK version was used to export the model.
     // We probe all of them.
-    let eiClassifyFn = null; // will be set to whichever function exists
+    let eiClassifyFn = null;    // will be set to whichever function exists
+    let eiClassifyStyle = '';   // 'classify' | 'run_classifier' | 'classifyAudio'
+    let isAiEnabled = true;     // toggled by AI ON/OFF button
 
     function findEiClassifier() {
-        // Check window.Module first (Emscripten-wrapped .wasm build)
         if (window.Module) {
-            if (typeof window.Module.classify        === 'function') return window.Module.classify.bind(window.Module);
-            if (typeof window.Module.run_classifier  === 'function') return window.Module.run_classifier.bind(window.Module);
-            if (typeof window.Module.classifyAudio   === 'function') return window.Module.classifyAudio.bind(window.Module);
+            if (typeof window.Module.classify        === 'function') return { fn: window.Module.classify.bind(window.Module),       style: 'classify' };
+            if (typeof window.Module.run_classifier  === 'function') return { fn: window.Module.run_classifier.bind(window.Module), style: 'run_classifier' };
+            if (typeof window.Module.classifyAudio   === 'function') return { fn: window.Module.classifyAudio.bind(window.Module),  style: 'classifyAudio' };
         }
-        // Some EI exports put classifier directly on window
-        if (typeof window.classify        === 'function') return window.classify;
-        if (typeof window.run_classifier  === 'function') return window.run_classifier;
+        if (typeof window.classify        === 'function') return { fn: window.classify,       style: 'classify' };
+        if (typeof window.run_classifier  === 'function') return { fn: window.run_classifier, style: 'run_classifier' };
         return null;
     }
 
     function pollForAiReady() {
         if (classifierInitialized) return;
 
-        eiClassifyFn = findEiClassifier();
+        let found = findEiClassifier();
 
-        if (eiClassifyFn) {
+        if (found) {
+            eiClassifyFn = found.fn;
+            eiClassifyStyle = found.style;
             classifierInitialized = true;
-            logMsg("✅ AI Engine Ready! fn=" + eiClassifyFn.name);
+            logMsg("✅ AI Engine Ready! using=" + found.style);
             document.getElementById('ai-status-row').innerText = "AI engine loaded ✅";
             document.getElementById('ai-confidence').innerText = "AI Confidence: Listening...";
             return;
@@ -200,9 +205,12 @@
 
     // Called with 16000 float32 samples
     function runAiInference(dataArray) {
-        if (!classifierInitialized || !eiClassifyFn) return;
+        if (!classifierInitialized || !eiClassifyFn || !isAiEnabled) return;
         try {
-            let result = eiClassifyFn(dataArray);
+            // run_classifier(data, dataLength, debug=false) — 3 args required
+            let result = (eiClassifyStyle === 'run_classifier')
+                ? eiClassifyFn(dataArray, dataArray.length, false)
+                : eiClassifyFn(dataArray);
 
             // Diagnostic: log raw result shape once so we can see label names
             if (!runAiInference._logged) {
@@ -309,8 +317,8 @@
 
                 document.getElementById('vol-bar').style.width = Math.min(100, (avgVol / 1.5)) + "%";
 
-                // Volume-based trigger: only fires when AI engine is NOT loaded
-                if (!classifierInitialized) {
+                // Volume-based trigger: fires when AI is OFF or engine not loaded
+                if (!classifierInitialized || !isAiEnabled) {
                     if (micState === 0 && avgVol > threshold && isVoiceMode) {
                         processVoiceTrigger(avgVol, false);
                     } else if (micState === 2 && avgVol < (threshold * 0.8)) {
@@ -441,6 +449,22 @@
     });
 
     document.getElementById('vmBtn').addEventListener('click', () => { setVoiceMode(!isVoiceMode, false); });
+
+    document.getElementById('aiBtn').addEventListener('click', () => {
+        isAiEnabled = !isAiEnabled;
+        const btn = document.getElementById('aiBtn');
+        if (isAiEnabled) {
+            btn.innerText = "AI: ON";
+            btn.style.background = "#27ae60";
+            document.getElementById('ai-confidence').innerText = classifierInitialized ? "AI Confidence: Listening..." : "AI: engine not loaded";
+            logMsg("🧠 AI detection ON.");
+        } else {
+            btn.innerText = "AI: OFF (Vol)";
+            btn.style.background = "#6c757d";
+            document.getElementById('ai-confidence').innerText = "AI disabled — volume mode";
+            logMsg("🔇 AI detection OFF. Using volume trigger.");
+        }
+    });
 
     function setVoiceMode(voiceEnabled, fromSync = false) {
         isVoiceMode = voiceEnabled;
