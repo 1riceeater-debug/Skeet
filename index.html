@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>AI Skeet Puller V19</title>
+    <title>AI Skeet Puller V19.4</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <!-- Define Module hook BEFORE EI script so onRuntimeInitialized is captured -->
     <script>
@@ -39,7 +39,7 @@
 </head>
 <body>
 
-    <h2>AI Puller V19 (Edge Impulse)</h2>
+    <h2>AI Puller V19.4 (Edge Impulse)</h2>
     
     <div class="top-row">
         <button id="connectBtn" class="top-btn" style="background: #007BFF; color: white;">Connect BLE</button>
@@ -144,61 +144,102 @@
     };
 
     // =====================================================================
-    // EDGE IMPULSE AI ENGINE — correct Emscripten / standalone init pattern
+    // EDGE IMPULSE AI ENGINE
     // =====================================================================
-    // The <script> block above the EI script tag defines Module.onRuntimeInitialized
-    // BEFORE the WASM loads, so the callback sets window._eiReady = true.
-    // We poll for that flag here and mark the classifier ready when it fires.
-    // This handles both: (a) WASM loads fast, (b) WASM loads after page script runs.
+    // EI standalone builds expose the classifier via ONE of these names
+    // depending on which SDK version was used to export the model.
+    // We probe all of them.
+    let eiClassifyFn = null; // will be set to whichever function exists
+
+    function findEiClassifier() {
+        // Check window.Module first (Emscripten-wrapped .wasm build)
+        if (window.Module) {
+            if (typeof window.Module.classify        === 'function') return window.Module.classify.bind(window.Module);
+            if (typeof window.Module.run_classifier  === 'function') return window.Module.run_classifier.bind(window.Module);
+            if (typeof window.Module.classifyAudio   === 'function') return window.Module.classifyAudio.bind(window.Module);
+        }
+        // Some EI exports put classifier directly on window
+        if (typeof window.classify        === 'function') return window.classify;
+        if (typeof window.run_classifier  === 'function') return window.run_classifier;
+        return null;
+    }
 
     function pollForAiReady() {
         if (classifierInitialized) return;
-        if (window._eiReady && window.Module && typeof window.Module.classify === 'function') {
+
+        eiClassifyFn = findEiClassifier();
+
+        if (eiClassifyFn) {
             classifierInitialized = true;
-            logMsg("✅ AI Engine Ready!");
+            logMsg("✅ AI Engine Ready! fn=" + eiClassifyFn.name);
             document.getElementById('ai-status-row').innerText = "AI engine loaded ✅";
             document.getElementById('ai-confidence').innerText = "AI Confidence: Listening...";
             return;
         }
-        // Not ready yet — check again in 200ms (gives up to ~10s before logging warning)
+
         if (!pollForAiReady._count) pollForAiReady._count = 0;
         pollForAiReady._count++;
-        if (pollForAiReady._count < 50) {
+
+        // Every 2 seconds dump a diagnostic so we can see what's on Module
+        if (pollForAiReady._count % 10 === 0) {
+            let modKeys = window.Module ? Object.keys(window.Module).filter(k => typeof window.Module[k] === 'function').join(', ') : 'Module not defined';
+            logMsg("🔍 Module functions: [" + modKeys + "]");
+        }
+
+        if (pollForAiReady._count < 75) { // ~15 seconds
             setTimeout(pollForAiReady, 200);
         } else {
-            logMsg("⚠️ AI engine did not load. Check edge-impulse-standalone.js is in the same folder. Running volume-only mode.");
+            let modKeys = window.Module ? Object.keys(window.Module).filter(k => typeof window.Module[k] === 'function').join(', ') : 'Module not defined';
+            logMsg("❌ AI not found after 15s. Module keys: [" + modKeys + "]. Using volume mode.");
             document.getElementById('ai-status-row').innerText = "Volume mode (AI not found)";
+            document.getElementById('ai-confidence').innerText = "Volume detection active";
         }
     }
-    setTimeout(pollForAiReady, 300);
+    // Start polling immediately — EI WASM often loads within 1-2 seconds
+    pollForAiReady();
 
-    // Called with 16000 samples of float32 audio
+    // Called with 16000 float32 samples
     function runAiInference(dataArray) {
-        if (!classifierInitialized) return;
+        if (!classifierInitialized || !eiClassifyFn) return;
         try {
-            let result = window.Module.classify(dataArray);
-            for (let i = 0; i < result.results.length; i++) {
-                let label = result.results[i].label;
-                let value = result.results[i].value;
-                if (label === "pull") {
-                    let pct = Math.round(value * 100);
-                    lastAiConfidence = pct;
-                    document.getElementById('ai-confidence').innerText = "AI Confidence: " + pct + "%";
+            let result = eiClassifyFn(dataArray);
 
-                    // Map slider (5–150) to AI confidence threshold (3–100%)
-                    let aiThreshold = threshold / 1.5;
+            // Diagnostic: log raw result shape once so we can see label names
+            if (!runAiInference._logged) {
+                runAiInference._logged = true;
+                logMsg("🔬 Raw EI result: " + JSON.stringify(result).substring(0, 200));
+            }
 
-                    if (micState === 0 && pct >= aiThreshold && isVoiceMode) {
-                        document.getElementById('ai-confidence').style.color = "#f00";
-                        processVoiceTrigger(pct, true);
-                    } else if (micState === 2 && pct < (aiThreshold * 0.6)) {
-                        micState = 0;
-                        document.getElementById('vol-bar').style.background = "#0f0";
-                        logMsg("Quiet. Ready for next call.");
-                    } else {
-                        document.getElementById('ai-confidence').style.color = "#0f0";
-                    }
+            // Handle both result shapes EI uses:
+            // Shape A: { results: [{label, value}] }
+            // Shape B: { classification: {pull: 0.9, noise: 0.1} }
+            let pullScore = null;
+
+            if (result && result.results) {
+                for (let r of result.results) {
+                    if (r.label === "pull") { pullScore = r.value; break; }
                 }
+            } else if (result && result.classification) {
+                if (typeof result.classification.pull !== 'undefined') pullScore = result.classification.pull;
+            } else if (result && typeof result.pull !== 'undefined') {
+                pullScore = result.pull;
+            }
+
+            if (pullScore === null) return; // label not found in this window
+
+            let pct = Math.round(pullScore * 100);
+            document.getElementById('ai-confidence').innerText = "AI Confidence: " + pct + "%";
+            let aiThreshold = threshold / 1.5; // map slider 5-150 → ~3-100%
+
+            if (micState === 0 && pct >= aiThreshold && isVoiceMode) {
+                document.getElementById('ai-confidence').style.color = "#f00";
+                processVoiceTrigger(pct, true);
+            } else if (micState === 2 && pct < (aiThreshold * 0.6)) {
+                micState = 0;
+                document.getElementById('vol-bar').style.background = "#0f0";
+                logMsg("Quiet. Ready for next call.");
+            } else {
+                document.getElementById('ai-confidence').style.color = "#0f0";
             }
         } catch (err) {
             logMsg("Inference error: " + err);
