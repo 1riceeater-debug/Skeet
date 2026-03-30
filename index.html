@@ -151,7 +151,7 @@
     // Mirrors the official EI run-impulse.js EdgeImpulseClassifier class
     class EdgeImpulseClassifier {
         _initialized = false;
-init() {
+    init() {
     return new Promise((resolve) => {
 
         // ✅ KEY FIX: WASM already finished loading
@@ -219,6 +219,7 @@ init() {
     async function initEiClassifier() {
         try {
             eiClassifier = new EdgeImpulseClassifier();
+             console.log("Module.calledRun =", window.Module?.calledRun);
             await eiClassifier.init();
             classifierInitialized = true;
             logMsg("✅ AI Engine Ready!");
