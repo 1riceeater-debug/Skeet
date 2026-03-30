@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>AI Skeet Puller V19.5</title>
+    <title>AI Skeet Puller V19.6</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <!-- Define Module hook BEFORE EI script so onRuntimeInitialized is captured -->
     <script>
@@ -39,7 +39,7 @@
 </head>
 <body>
 
-    <h2>AI Puller V19.5 (Edge Impulse)</h2>
+    <h2>AI Puller V19.6 (Edge Impulse)</h2>
     
     <div class="top-row">
         <button id="connectBtn" class="top-btn" style="background: #007BFF; color: white;">Connect BLE</button>
@@ -51,6 +51,7 @@
     </div>
     <div class="top-row">
         <button id="aiBtn" class="top-btn" style="background: #27ae60; color: white;">AI: ON</button>
+        <button id="dumpBtn" class="top-btn" style="background: #e67e22; color: white;">🔍 Dump</button>
     </div>
     
     <div id="arm-status">SAFE / DISARMED</div>
@@ -149,58 +150,67 @@
     // =====================================================================
     // EDGE IMPULSE AI ENGINE
     // =====================================================================
-    // EI standalone builds expose the classifier via ONE of these names
-    // depending on which SDK version was used to export the model.
-    // We probe all of them.
-    let eiClassifyFn = null;    // will be set to whichever function exists
-    let eiClassifyStyle = '';   // 'classify' | 'run_classifier' | 'classifyAudio'
-    let isAiEnabled = true;     // toggled by AI ON/OFF button
+    let eiClassifyFn   = null;
+    let eiClassifyStyle = '';
+    let isAiEnabled    = true;
+
+    // Dump everything visible on Module to the log — tap the Dump button
+    function dumpModule() {
+        if (!window.Module) { logMsg("❌ window.Module is undefined — JS file not loaded?"); return; }
+        let fns  = Object.keys(window.Module).filter(k => typeof window.Module[k] === 'function');
+        let vals = Object.keys(window.Module).filter(k => typeof window.Module[k] !== 'function').slice(0, 20);
+        logMsg("📦 Module functions (" + fns.length + "): " + (fns.join(', ') || '(none)'));
+        logMsg("📦 Module props: " + (vals.join(', ') || '(none)'));
+        logMsg("📦 classifierInitialized=" + classifierInitialized + " style=" + eiClassifyStyle);
+        // Try a test call with dummy data so we see the exact error / result shape
+        if (eiClassifyFn) {
+            try {
+                let dummy = new Float32Array(16000);
+                let r = (eiClassifyStyle === 'run_classifier')
+                    ? eiClassifyFn(dummy, dummy.length, false)
+                    : eiClassifyFn(dummy);
+                logMsg("🔬 Test result: " + JSON.stringify(r).substring(0, 300));
+            } catch(e) { logMsg("🔬 Test call error: " + e); }
+        }
+    }
 
     function findEiClassifier() {
-        if (window.Module) {
-            if (typeof window.Module.classify        === 'function') return { fn: window.Module.classify.bind(window.Module),       style: 'classify' };
-            if (typeof window.Module.run_classifier  === 'function') return { fn: window.Module.run_classifier.bind(window.Module), style: 'run_classifier' };
-            if (typeof window.Module.classifyAudio   === 'function') return { fn: window.Module.classifyAudio.bind(window.Module),  style: 'classifyAudio' };
+        // Try every known EI export name on Module and on window
+        const targets = [window.Module, window];
+        const names   = ['classify','run_classifier','classifyAudio','ei_classify','Classifier'];
+        for (let obj of targets) {
+            if (!obj) continue;
+            for (let name of names) {
+                if (typeof obj[name] === 'function') {
+                    return { fn: obj[name].bind(obj), style: name };
+                }
+            }
         }
-        if (typeof window.classify        === 'function') return { fn: window.classify,       style: 'classify' };
-        if (typeof window.run_classifier  === 'function') return { fn: window.run_classifier, style: 'run_classifier' };
         return null;
     }
 
     function pollForAiReady() {
         if (classifierInitialized) return;
-
         let found = findEiClassifier();
-
         if (found) {
-            eiClassifyFn = found.fn;
+            eiClassifyFn    = found.fn;
             eiClassifyStyle = found.style;
             classifierInitialized = true;
-            logMsg("✅ AI Engine Ready! using=" + found.style);
-            document.getElementById('ai-status-row').innerText = "AI engine loaded ✅";
+            logMsg("✅ AI Engine Ready! fn=" + found.style);
+            document.getElementById('ai-status-row').innerText = "AI engine loaded ✅  fn=" + found.style;
             document.getElementById('ai-confidence').innerText = "AI Confidence: Listening...";
             return;
         }
-
         if (!pollForAiReady._count) pollForAiReady._count = 0;
         pollForAiReady._count++;
-
-        // Every 2 seconds dump a diagnostic so we can see what's on Module
-        if (pollForAiReady._count % 10 === 0) {
-            let modKeys = window.Module ? Object.keys(window.Module).filter(k => typeof window.Module[k] === 'function').join(', ') : 'Module not defined';
-            logMsg("🔍 Module functions: [" + modKeys + "]");
-        }
-
-        if (pollForAiReady._count < 75) { // ~15 seconds
+        if (pollForAiReady._count < 100) {          // poll for ~20 seconds
             setTimeout(pollForAiReady, 200);
         } else {
-            let modKeys = window.Module ? Object.keys(window.Module).filter(k => typeof window.Module[k] === 'function').join(', ') : 'Module not defined';
-            logMsg("❌ AI not found after 15s. Module keys: [" + modKeys + "]. Using volume mode.");
-            document.getElementById('ai-status-row').innerText = "Volume mode (AI not found)";
+            logMsg("❌ AI not found. Tap 🔍 Dump for details. Falling back to volume mode.");
+            document.getElementById('ai-status-row').innerText = "Volume mode — tap Dump for details";
             document.getElementById('ai-confidence').innerText = "Volume detection active";
         }
     }
-    // Start polling immediately — EI WASM often loads within 1-2 seconds
     pollForAiReady();
 
     // Called with 16000 float32 samples
@@ -449,6 +459,8 @@
     });
 
     document.getElementById('vmBtn').addEventListener('click', () => { setVoiceMode(!isVoiceMode, false); });
+
+    document.getElementById('dumpBtn').addEventListener('click', dumpModule);
 
     document.getElementById('aiBtn').addEventListener('click', () => {
         isAiEnabled = !isAiEnabled;
