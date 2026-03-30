@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>AI Skeet Puller V19.8</title>
+    <title>AI Skeet Puller V19.9</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <!-- Load the Edge Impulse AI Engine (must be in same folder) -->
     <script src="edge-impulse-standalone.js"></script>
@@ -31,7 +31,7 @@
 </head>
 <body>
 
-    <h2>AI Puller V19.8 (Edge Impulse)</h2>
+    <h2>AI Puller V19.9 (Edge Impulse)</h2>
     
     <div class="top-row">
         <button id="connectBtn" class="top-btn" style="background: #007BFF; color: white;">Connect BLE</button>
@@ -154,25 +154,26 @@
 init() {
     return new Promise((resolve) => {
 
-        // CASE 1: already initialized
-        if (window.Module && window.Module.calledRun) {
+        // ✅ KEY FIX: WASM already finished loading
+        if (window.Module && window.Module.calledRun === true) {
+            console.log("⚡ WASM already initialized (calledRun=true)");
             window._eiModuleReady = true;
             this._initialized = true;
             resolve();
             return;
         }
 
-        // CASE 2: wait for init
+        // ⏳ Otherwise wait for it
         const prev = window.Module.onRuntimeInitialized;
         window.Module.onRuntimeInitialized = () => {
             if (typeof prev === 'function') prev();
+            console.log("⏳ WASM runtime initialized (callback)");
             window._eiModuleReady = true;
             this._initialized = true;
             resolve();
         };
     });
-}
-        
+} 
 
         // Copy Float32Array into WASM heap, run classifier, free heap
         classify(rawData, debug = false) {
