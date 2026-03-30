@@ -1,16 +1,8 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>AI Skeet Puller V19.6</title>
+    <title>AI Skeet Puller V19.7</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <!-- Define Module hook BEFORE EI script so onRuntimeInitialized is captured -->
-    <script>
-        window.Module = window.Module || {};
-        window.Module.onRuntimeInitialized = function() {
-            // Signal the main app that the WASM classifier is ready
-            window._eiReady = true;
-        };
-    </script>
     <!-- Load the Edge Impulse AI Engine (must be in same folder) -->
     <script src="edge-impulse-standalone.js"></script>
     <style>
@@ -39,7 +31,7 @@
 </head>
 <body>
 
-    <h2>AI Puller V19.6 (Edge Impulse)</h2>
+    <h2>AI Puller V19.7 (Edge Impulse)</h2>
     
     <div class="top-row">
         <button id="connectBtn" class="top-btn" style="background: #007BFF; color: white;">Connect BLE</button>
@@ -149,105 +141,118 @@
 
     // =====================================================================
     // EDGE IMPULSE AI ENGINE
+    // Official EI browser pattern: EdgeImpulseClassifier wraps Module.run_classifier
+    // Data MUST be copied to WASM heap before calling run_classifier.
+    // See: https://docs.edgeimpulse.com/docs/run-inference/webassembly/through-webassembly-browser
     // =====================================================================
-    let eiClassifyFn   = null;
-    let eiClassifyStyle = '';
-    let isAiEnabled    = true;
+    let isAiEnabled = true;
+    let eiClassifier = null;  // EdgeImpulseClassifier instance
 
-    // Dump everything visible on Module to the log — tap the Dump button
+    // Mirrors the official EI run-impulse.js EdgeImpulseClassifier class
+    class EdgeImpulseClassifier {
+        _initialized = false;
+
+        init() {
+            // Module.onRuntimeInitialized may have already fired by the time
+            // we call init(), so check the flag first.
+            if (window._eiModuleReady === true) {
+                this._initialized = true;
+                return Promise.resolve();
+            }
+            return new Promise((resolve) => {
+                // Append to any existing callback rather than overwriting
+                const prev = window.Module.onRuntimeInitialized;
+                window.Module.onRuntimeInitialized = () => {
+                    if (typeof prev === 'function') prev();
+                    window._eiModuleReady = true;
+                    this._initialized = true;
+                    resolve();
+                };
+            });
+        }
+
+        // Copy Float32Array into WASM heap, run classifier, free heap
+        classify(rawData, debug = false) {
+            if (!this._initialized) throw new Error('Module not initialized');
+            const obj = this._arrayToHeap(rawData);
+            let ret = Module.run_classifier(obj.buffer.byteOffset, rawData.length, debug);
+            Module._free(obj.ptr);
+            if (ret.result !== 0) throw new Error('Classification failed: ' + ret.result);
+            // Build plain JS result from the EI C++ object
+            let jsResult = { anomaly: ret.anomaly, results: [] };
+            for (let i = 0; i < ret.size(); i++) {
+                let c = ret.get(i);
+                jsResult.results.push({ label: c.label, value: c.value });
+            }
+            return jsResult;
+        }
+
+        _arrayToHeap(data) {
+            const typedArray  = new Float32Array(data);
+            const numBytes    = typedArray.length * typedArray.BYTES_PER_ELEMENT;
+            const ptr         = Module._malloc(numBytes);
+            const heapBytes   = new Uint8Array(Module.HEAPU8.buffer, ptr, numBytes);
+            heapBytes.set(new Uint8Array(typedArray.buffer));
+            return { ptr: ptr, buffer: heapBytes };
+        }
+    }
+
+    // Dump Module state to log — tap the orange Dump button
     function dumpModule() {
-        if (!window.Module) { logMsg("❌ window.Module is undefined — JS file not loaded?"); return; }
-        let fns  = Object.keys(window.Module).filter(k => typeof window.Module[k] === 'function');
-        let vals = Object.keys(window.Module).filter(k => typeof window.Module[k] !== 'function').slice(0, 20);
-        logMsg("📦 Module functions (" + fns.length + "): " + (fns.join(', ') || '(none)'));
-        logMsg("📦 Module props: " + (vals.join(', ') || '(none)'));
-        logMsg("📦 classifierInitialized=" + classifierInitialized + " style=" + eiClassifyStyle);
-        // Try a test call with dummy data so we see the exact error / result shape
-        if (eiClassifyFn) {
+        if (!window.Module) { logMsg("❌ window.Module undefined — JS not loaded"); return; }
+        let fns = Object.keys(window.Module).filter(k => typeof window.Module[k] === 'function');
+        logMsg("📦 Module fns: " + (fns.join(', ') || '(none)'));
+        logMsg("📦 _eiModuleReady=" + window._eiModuleReady + " classifierReady=" + classifierInitialized);
+        if (eiClassifier && classifierInitialized) {
             try {
                 let dummy = new Float32Array(16000);
-                let r = (eiClassifyStyle === 'run_classifier')
-                    ? eiClassifyFn(dummy, dummy.length, false)
-                    : eiClassifyFn(dummy);
+                let r = eiClassifier.classify(dummy, false);
                 logMsg("🔬 Test result: " + JSON.stringify(r).substring(0, 300));
-            } catch(e) { logMsg("🔬 Test call error: " + e); }
+            } catch(e) { logMsg("🔬 Test error: " + e); }
         }
     }
 
-    function findEiClassifier() {
-        // Try every known EI export name on Module and on window
-        const targets = [window.Module, window];
-        const names   = ['classify','run_classifier','classifyAudio','ei_classify','Classifier'];
-        for (let obj of targets) {
-            if (!obj) continue;
-            for (let name of names) {
-                if (typeof obj[name] === 'function') {
-                    return { fn: obj[name].bind(obj), style: name };
-                }
-            }
-        }
-        return null;
-    }
-
-    function pollForAiReady() {
-        if (classifierInitialized) return;
-        let found = findEiClassifier();
-        if (found) {
-            eiClassifyFn    = found.fn;
-            eiClassifyStyle = found.style;
+    async function initEiClassifier() {
+        try {
+            eiClassifier = new EdgeImpulseClassifier();
+            await eiClassifier.init();
             classifierInitialized = true;
-            logMsg("✅ AI Engine Ready! fn=" + found.style);
-            document.getElementById('ai-status-row').innerText = "AI engine loaded ✅  fn=" + found.style;
+            logMsg("✅ AI Engine Ready!");
+            document.getElementById('ai-status-row').innerText = "AI engine loaded ✅";
             document.getElementById('ai-confidence').innerText = "AI Confidence: Listening...";
-            return;
-        }
-        if (!pollForAiReady._count) pollForAiReady._count = 0;
-        pollForAiReady._count++;
-        if (pollForAiReady._count < 100) {          // poll for ~20 seconds
-            setTimeout(pollForAiReady, 200);
-        } else {
-            logMsg("❌ AI not found. Tap 🔍 Dump for details. Falling back to volume mode.");
-            document.getElementById('ai-status-row').innerText = "Volume mode — tap Dump for details";
+        } catch(e) {
+            logMsg("❌ AI init failed: " + e);
+            document.getElementById('ai-status-row').innerText = "AI failed — volume mode";
             document.getElementById('ai-confidence').innerText = "Volume detection active";
         }
     }
-    pollForAiReady();
+    // Kick off immediately — resolves when WASM fires onRuntimeInitialized
+    initEiClassifier();
 
-    // Called with 16000 float32 samples
+    // Called with 16000 float32 samples from the ScriptProcessor
     function runAiInference(dataArray) {
-        if (!classifierInitialized || !eiClassifyFn || !isAiEnabled) return;
+        if (!classifierInitialized || !eiClassifier || !isAiEnabled) return;
         try {
-            // run_classifier(data, dataLength, debug=false) — 3 args required
-            let result = (eiClassifyStyle === 'run_classifier')
-                ? eiClassifyFn(dataArray, dataArray.length, false)
-                : eiClassifyFn(dataArray);
+            let result = eiClassifier.classify(dataArray, false);
 
-            // Diagnostic: log raw result shape once so we can see label names
+            // Log raw result shape once for debugging
             if (!runAiInference._logged) {
                 runAiInference._logged = true;
-                logMsg("🔬 Raw EI result: " + JSON.stringify(result).substring(0, 200));
+                logMsg("🔬 First result: " + JSON.stringify(result).substring(0, 250));
             }
 
-            // Handle both result shapes EI uses:
-            // Shape A: { results: [{label, value}] }
-            // Shape B: { classification: {pull: 0.9, noise: 0.1} }
+            // Find "pull" label in results array
             let pullScore = null;
-
             if (result && result.results) {
                 for (let r of result.results) {
                     if (r.label === "pull") { pullScore = r.value; break; }
                 }
-            } else if (result && result.classification) {
-                if (typeof result.classification.pull !== 'undefined') pullScore = result.classification.pull;
-            } else if (result && typeof result.pull !== 'undefined') {
-                pullScore = result.pull;
             }
-
-            if (pullScore === null) return; // label not found in this window
+            if (pullScore === null) return;
 
             let pct = Math.round(pullScore * 100);
             document.getElementById('ai-confidence').innerText = "AI Confidence: " + pct + "%";
-            let aiThreshold = threshold / 1.5; // map slider 5-150 → ~3-100%
+            let aiThreshold = threshold / 1.5;
 
             if (micState === 0 && pct >= aiThreshold && isVoiceMode) {
                 document.getElementById('ai-confidence').style.color = "#f00";
@@ -268,7 +273,7 @@
     // MIC START / STOP  (mirrors V18 architecture exactly)
     // =====================================================================
     async function startMic() {
-        // AI engine init is handled by onRuntimeInitialized / pollForAiReady above.
+        // AI engine init is handled by initEiClassifier() above.
         if (classifierInitialized) {
             logMsg("🧠 AI mode active.");
         } else {
