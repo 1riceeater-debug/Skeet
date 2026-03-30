@@ -114,7 +114,7 @@
 
     // Threshold: single slider, used for BOTH volume mode and AI mode
     // In volume mode: raw volume average vs threshold (5–150 scale)
-    // In AI mode:     confidence% vs (threshold / 1.5) maps 5–150 → ~3–100%
+    // In AI mode:     confidence% vs (threshold / 1.5) maps 5–150 → ~3–100%: change from 1.5 to 100
     let threshold = 50;
 
     let isSyncEnabled = true;
@@ -257,9 +257,9 @@
 
             let pct = Math.round(pullScore * 100);
             document.getElementById('ai-confidence').innerText = "AI Confidence: " + pct + "%";
-            let aiThreshold = threshold / 1.5;
+            let aiThreshold = threshold / 100;
 
-            if (micState === 0 && pct >= aiThreshold && isVoiceMode) {
+            if (micState === 0 && pullScore >= aiThreshold && isVoiceMode ) {
                 document.getElementById('ai-confidence').style.color = "#f00";
                 processVoiceTrigger(pct, true);
             } else if (micState === 2 && pct < (aiThreshold * 0.6)) {
@@ -320,11 +320,11 @@
                 const inputData = e.inputBuffer.getChannelData(0);
                 for (let i = 0; i < inputData.length; i++) audioDataBuffer.push(inputData[i]);
 
-                // Accumulate 1 second (16000 samples) then infer with sliding window
-                if (audioDataBuffer.length >= 16000) {
-                    if (classifierInitialized) runAiInference(audioDataBuffer.slice(0, 16000));
-                    audioDataBuffer = audioDataBuffer.slice(4000); // slide 250ms
-                }
+                // Accumulate 0.5 second (8000 samples) then infer with sliding window
+              if (audioDataBuffer.length >= 8000) {
+                  runAiInference(audioDataBuffer.slice(0, 8000));
+                  audioDataBuffer = audioDataBuffer.slice(2000);
+              }
             };
 
             // --- Volume animation loop (V18 style) ---
